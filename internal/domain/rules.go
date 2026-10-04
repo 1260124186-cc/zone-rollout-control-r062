@@ -141,47 +141,34 @@ func PlanFenceFor(state *State, planID string) uint64 {
 	return state.PlanFences[planID]
 }
 
-// AdvancePlanFence records that a plan aggregate changed at the given store
-// revision so later submissions can be fenced against that revision.
-func AdvancePlanFence(state *State, planID string, revision uint64) {
+// AdvancePlanFence records that a plan aggregate committed a change by
+// incrementing only that plan's durable fence. Writes touching other plans or
+// other entities never move a plan's fence.
+func AdvancePlanFence(state *State, planID string) {
 	if state.PlanFences == nil {
 		state.PlanFences = make(map[string]uint64)
 	}
-	if revision > state.PlanFences[planID] {
-		state.PlanFences[planID] = revision
-	}
+	state.PlanFences[planID]++
 }
 
-// ObservePlanFences keeps every plan fence aligned with the latest durable
-// revision so a version read from plan detail always matches the fence used by
-// the next write precondition.
-func ObservePlanFences(state *State) {
-	if state.PlanFences == nil {
-		state.PlanFences = make(map[string]uint64)
-	}
-	for planID := range state.Plans {
-		state.PlanFences[planID] = state.Revision
-	}
-}
-
-// RebuildPlanFences reconstructs every plan fence from the persisted plan
-// history whenever a snapshot is loaded.
+// RebuildPlanFences ensures every persisted plan has a durable fence after a
+// snapshot loads. Persisted fences are authoritative and kept as they are so
+// versions never move backwards across a restart; only plans without any
+// recorded fence fall back to the version stored on the plan aggregate.
 func RebuildPlanFences(state *State) {
-	fences := make(map[string]uint64, len(state.Plans))
-	for planID := range state.Plans {
-		fences[planID] = 1
+	if state.PlanFences == nil {
+		state.PlanFences = make(map[string]uint64)
 	}
-	for _, revision := range state.Revisions {
-		if _, ok := fences[revision.PlanID]; ok {
-			fences[revision.PlanID]++
+	for planID, plan := range state.Plans {
+		fence := state.PlanFences[planID]
+		if fence < plan.Version {
+			fence = plan.Version
 		}
-	}
-	for _, assessment := range state.Assessments {
-		if _, ok := fences[assessment.PlanID]; ok {
-			fences[assessment.PlanID]++
+		if fence < 1 {
+			fence = 1
 		}
+		state.PlanFences[planID] = fence
 	}
-	state.PlanFences = fences
 }
 
 // PlanVersion projects the durable fence into a plan aggregate for responses.

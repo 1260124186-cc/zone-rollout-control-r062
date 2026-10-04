@@ -77,6 +77,8 @@ func (s *Service) Evaluate(
 		state.Assessments[result.ID] = result
 		state.AssessmentRequestKeys[requestIndex] = result.ID
 		plan.LatestAssessmentID = result.ID
+		domain.AdvancePlanFence(state, planID)
+		plan = domain.PlanVersion(state, plan)
 		state.Plans[planID] = plan
 		store.AddAudit(state, s.ids, "assessment", result.ID, "completed", now, map[string]any{
 			"plan_id": planID,

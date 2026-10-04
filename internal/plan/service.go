@@ -39,9 +39,6 @@ func (s *Service) Create(ctx context.Context, input domain.PlanCreateInput) (dom
 	}
 	err := s.store.Write(ctx, func(state *domain.State) error {
 		state.Plans[plan.ID] = plan
-		domain.AdvancePlanFence(state, plan.ID, state.Revision+1)
-		plan = domain.PlanVersion(state, plan)
-		state.Plans[plan.ID] = plan
 		store.AddAudit(state, s.ids, "plan", plan.ID, "created", now, map[string]any{
 			"zone": plan.Zone,
 		})
@@ -103,8 +100,7 @@ func (s *Service) AddRevision(
 		}
 		state.Revisions[created.ID] = created
 		plan.LatestRevisionID = created.ID
-		domain.AdvancePlanFence(state, planID, state.Revision+1)
-		plan = domain.PlanVersion(state, plan)
+		plan.Version++
 		state.Plans[planID] = plan
 		store.AddAudit(state, s.ids, "revision", created.ID, "added", now, map[string]any{
 			"plan_id": planID,
@@ -133,8 +129,7 @@ func (s *Service) Activate(
 		if err := domain.ActivatePlan(&current, now); err != nil {
 			return err
 		}
-		domain.AdvancePlanFence(state, planID, state.Revision+1)
-		current = domain.PlanVersion(state, current)
+		current.Version++
 		state.Plans[planID] = current
 		store.AddAudit(state, s.ids, "plan", planID, "activated", now, map[string]any{
 			"version": current.Version,
@@ -163,8 +158,7 @@ func (s *Service) Complete(
 		if err := domain.CompletePlan(&current, now); err != nil {
 			return err
 		}
-		domain.AdvancePlanFence(state, planID, state.Revision+1)
-		current = domain.PlanVersion(state, current)
+		current.Version++
 		state.Plans[planID] = current
 		store.AddAudit(state, s.ids, "plan", planID, "completed", now, map[string]any{
 			"version": current.Version,

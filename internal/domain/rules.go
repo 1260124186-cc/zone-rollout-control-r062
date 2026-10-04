@@ -133,43 +133,49 @@ func round(value float64, places int) float64 {
 	return math.Round(value*scale) / scale
 }
 
-// PlanFenceFor reports the durable fence that guards a plan aggregate.
+// PlanFenceFor reports the optimistic-concurrency version that guards a plan
+// aggregate. A plan version is advanced solely by successful commits of that
+// same plan aggregate; it is never tied to the global store revision, so writes
+// to other entities or to other plans cannot move it.
 func PlanFenceFor(state *State, planID string) uint64 {
 	if state == nil {
 		return 0
 	}
-	return state.PlanFences[planID]
+	if plan, ok := state.Plans[planID]; ok {
+		return plan.Version
+	}
+	return 0
 }
 
-// AdvancePlanFence records that a plan aggregate changed at the given store
-// revision so later submissions can be fenced against that revision.
-func AdvancePlanFence(state *State, planID string, revision uint64) {
-	if state.PlanFences == nil {
-		state.PlanFences = make(map[string]uint64)
-	}
-	if revision > state.PlanFences[planID] {
-		state.PlanFences[planID] = revision
-	}
-}
-
-// ObservePlanFences keeps every plan fence aligned with the latest durable
-// revision so a version read from plan detail always matches the fence used by
-// the next write precondition.
+// ObservePlanFences keeps the derived fence index aligned with the version
+// carried by every plan aggregate. Only versions the plan itself already
+// committed are reflected; the global store revision is intentionally not used
+// here so unrelated writes cannot shift a plan's version.
 func ObservePlanFences(state *State) {
 	if state.PlanFences == nil {
 		state.PlanFences = make(map[string]uint64)
 	}
-	for planID := range state.Plans {
-		state.PlanFences[planID] = state.Revision
+	for planID, plan := range state.Plans {
+		state.PlanFences[planID] = plan.Version
 	}
 }
 
-// RebuildPlanFences reconstructs every plan fence from the persisted plan
-// history whenever a snapshot is loaded.
+// RebuildPlanFences reconstructs each plan's version from that plan's own
+// committed history whenever a snapshot is loaded. Counting the revision,
+// activation, completion and assessment commits deterministically yields the
+// same monotonic version the aggregate held before the restart, independent of
+// the global revision interleaved with writes to other plans.
 func RebuildPlanFences(state *State) {
 	fences := make(map[string]uint64, len(state.Plans))
-	for planID := range state.Plans {
-		fences[planID] = 1
+	for planID, plan := range state.Plans {
+		version := uint64(1) // plan creation
+		if plan.ActivatedAt != nil {
+			version++ // activation commit
+		}
+		if plan.CompletedAt != nil {
+			version++ // completion commit
+		}
+		fences[planID] = version
 	}
 	for _, revision := range state.Revisions {
 		if _, ok := fences[revision.PlanID]; ok {
@@ -181,16 +187,25 @@ func RebuildPlanFences(state *State) {
 			fences[assessment.PlanID]++
 		}
 	}
+	for planID, version := range fences {
+		plan := state.Plans[planID]
+		plan.Version = version
+		state.Plans[planID] = plan
+	}
 	state.PlanFences = fences
 }
 
-// PlanVersion projects the durable fence into a plan aggregate for responses.
+// PlanVersion projects the committed plan version into an aggregate for
+// responses.
 func PlanVersion(state *State, plan RolloutPlan) RolloutPlan {
-	plan.Version = PlanFenceFor(state, plan.ID)
+	if version := PlanFenceFor(state, plan.ID); version != 0 {
+		plan.Version = version
+	}
 	return plan
 }
 
-// PlanVersionMatches reports whether a submission carries the current fence.
+// PlanVersionMatches reports whether a submission carries the plan's current
+// version.
 func PlanVersionMatches(state *State, planID string, expected uint64) bool {
 	return expected != 0 && PlanFenceFor(state, planID) == expected
 }
